@@ -1,0 +1,28 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "ECOWORTHY Battery",
+        "description": "Monitors ECO-WORTHY 0B / 02 LiFePO4 batteries over Bluetooth. The batteries are auto-discovered, so just click Submit.",
+        "data": {
+          "name": "Name"
+        }
+      }
+    },
+    "abort": {
+      "already_configured": "This integration is already configured.",
+      "no_bluetooth": "The Home Assistant Bluetooth integration could not be loaded. Make sure a Bluetooth adapter is available and set up."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "ECOWORTHY Battery options",
+        "description": "How often the batteries are polled over Bluetooth.",
+        "data": {
+          "scan_interval": "Poll interval (seconds)"
+        }
+      }
+    }
+  }
+}
