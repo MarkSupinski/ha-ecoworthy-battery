@@ -140,10 +140,15 @@ class ECOWORTHYBatterySensor(CoordinatorEntity, SensorEntity):
     def available(self) -> bool:
         if not super().available:
             return False
-        return self.coordinator.data.get(self._address) is not None
+        return (
+            self.coordinator.data is not None
+            and self.coordinator.data.get(self._address) is not None
+        )
 
     @property
     def native_value(self) -> Any:
+        if self.coordinator.data is None:
+            return None
         data = self.coordinator.data.get(self._address)
         if data is None:
             return None
@@ -175,8 +180,9 @@ def _entity_list(
     instead of being removed and leaving orphaned registry entries.
     """
     entities: list[ECOWORTHYBatterySensor] = []
+    data = coordinator.data  # None until the first background refresh completes
     for address, name in coordinator.discovered_batteries.items():
-        battery = coordinator.data.get(address)
+        battery = data.get(address) if data is not None else None
         for key, description in SENSOR_DESCRIPTIONS.items():
             entities.append(
                 ECOWORTHYBatterySensor(coordinator, address, name, description, _getter(key))
