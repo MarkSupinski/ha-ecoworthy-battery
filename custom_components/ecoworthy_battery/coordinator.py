@@ -110,6 +110,7 @@ class ECOWORTHYBatteryCoordinator(DataUpdateCoordinator[dict[str, BatteryData | 
         self._config_entry = config_entry
         self._discovered: dict[str, str] = {}  # address -> device name
         self._reported_addresses: set[str] = set()  # addresses with a good read
+        self._reported_cells: dict[str, int] = {}  # address -> last cell count
         self._first_update = True
         self._unregister_callbacks: list[Any] = []
         super().__init__(
@@ -122,6 +123,11 @@ class ECOWORTHYBatteryCoordinator(DataUpdateCoordinator[dict[str, BatteryData | 
                 )
             ),
         )
+
+    @property
+    def discovered_batteries(self) -> dict[str, str]:
+        """Address -> name for every battery ever seen (even if unreadable)."""
+        return dict(self._discovered)
 
     async def _async_setup(self) -> None:
         """Register for BLE advertisements and pick up already-seen devices."""
@@ -185,30 +191,35 @@ class ECOWORTHYBatteryCoordinator(DataUpdateCoordinator[dict[str, BatteryData | 
             ),
         )
 
-        # Sensor entities are only created for batteries with a successful read.
-        # A battery whose radio was asleep on an earlier poll would otherwise
-        # never get a device/entities, so reload the entry the first time any
-        # not-yet-reported battery reads successfully.
+        # Track which batteries report data and how many cells each has, so we
+        # can reload and create entities the first time a battery becomes
+        # readable (or grows its cell count) without spamming reloads.
         successful = {
             address for address, reading in data.items() if reading is not None
         }
+        reload_reason: str | None = None
         if self._first_update:
             self._first_update = False
-            self._reported_addresses = successful
+            self._reported_addresses = set(successful)
+            for address in successful:
+                self._reported_cells.setdefault(address, len(data[address].cells))
         else:
             new_readings = successful - self._reported_addresses
             if new_readings:
                 self._reported_addresses |= new_readings
-                for address in sorted(new_readings):
-                    reading = data[address]
-                    _LOGGER.info(
-                        "Battery %s (%s) read successfully; reloading to create entities",
-                        reading.name if reading else address,
-                        address,
-                    )
-                self.hass.config_entries.async_schedule_reload(
-                    self._config_entry.entry_id
+                reload_reason = (
+                    "new batteries read successfully: "
+                    + ", ".join(sorted(new_readings))
                 )
+            for address in successful:
+                cell_count = len(data[address].cells)
+                if cell_count > self._reported_cells.get(address, 0):
+                    self._reported_cells[address] = cell_count
+                    reload_reason = f"cell count for {address} grew to {cell_count}"
+
+        if reload_reason:
+            _LOGGER.info("Reloading to create entities (%s)", reload_reason)
+            self.hass.config_entries.async_schedule_reload(self._config_entry.entry_id)
 
         return data
 

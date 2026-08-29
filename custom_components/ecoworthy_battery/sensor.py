@@ -168,25 +168,30 @@ def _getter(key: str) -> _VALUE:
 def _entity_list(
     coordinator: ECOWORTHYBatteryCoordinator,
 ) -> list[ECOWORTHYBatterySensor]:
+    """Create sensors for every known battery.
+
+    Sensors are created for all *discovered* addresses (not just ones with a
+    successful read), so entities persist as unavailable while a battery sleeps
+    instead of being removed and leaving orphaned registry entries.
+    """
     entities: list[ECOWORTHYBatterySensor] = []
-    for address, battery in coordinator.data.items():
-        if battery is None:
-            continue
+    for address, name in coordinator.discovered_batteries.items():
+        battery = coordinator.data.get(address)
         for key, description in SENSOR_DESCRIPTIONS.items():
             entities.append(
-                ECOWORTHYBatterySensor(
-                    coordinator, address, battery.name, description, _getter(key)
-                )
+                ECOWORTHYBatterySensor(coordinator, address, name, description, _getter(key))
             )
-        for i in range(len(battery.cells)):
-            idx = i + 1
+        # These packs are 4S; the coordinator reloads if a battery reports more
+        # cells, and the getter guards against shorter lists.
+        cell_count = len(battery.cells) if battery else 4
+        for i in range(1, cell_count + 1):
             entities.append(
                 ECOWORTHYBatterySensor(
                     coordinator,
                     address,
-                    battery.name,
-                    _cell_description(idx),
-                    lambda d, i=idx: d.cells[i - 1] if len(d.cells) >= i else None,
+                    name,
+                    _cell_description(i),
+                    lambda d, i=i: d.cells[i - 1] if len(d.cells) >= i else None,
                 )
             )
     return entities
