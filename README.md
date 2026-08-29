@@ -63,6 +63,12 @@ Under **Options** you can change the BLE poll interval (30–3600 s, default 60)
 - **Battery shows unavailable** — the battery was not connectable during the
   last poll (sleeping, out of range, or another client connected). It recovers
   automatically on the next poll.
+- **Card says "X minutes ago" / stale timestamp** — the card may be showing the
+  sensor's *last changed* time, which stays frozen while the SOC value is
+  unchanged (normal for an idle battery). Use the **`Last update`** sensor
+  (device_class timestamp) to see when the integration last *read* the battery;
+  it advances every poll. If *that* is also stale, the battery is sleeping or
+  out of range — wake it or check the Bluetooth integration.
 - **Only some cells reported** — the 0xA2 frame includes a cell count; a
   sensor is created per reported cell.
 
