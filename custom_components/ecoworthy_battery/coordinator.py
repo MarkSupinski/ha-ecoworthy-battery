@@ -8,20 +8,17 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
-from homeassistant.components import bluetooth
 from homeassistant.components.bluetooth import (
-    BluetoothChange,
-    BluetoothScanningMode,
     BluetoothServiceInfoBleak,
-    async_discovered_service_info,
-    async_register_callback,
     async_ble_device_from_address,
+    async_discovered_service_info,
 )
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
 
 from bleak import BleakClient
+from bleak_retry_connector import establish_connection
 
 from . import decoder
 from .const import (
@@ -113,7 +110,6 @@ class ECOWORTHYBatteryCoordinator(DataUpdateCoordinator[dict[str, BatteryData | 
         self._reported_addresses: set[str] = set()  # addresses with a good read
         self._reported_cells: dict[str, int] = {}  # address -> last cell count
         self._first_update = True
-        self._unregister_callbacks: list[Any] = []
         super().__init__(
             hass,
             _LOGGER,
@@ -130,50 +126,22 @@ class ECOWORTHYBatteryCoordinator(DataUpdateCoordinator[dict[str, BatteryData | 
         """Address -> name for every battery ever seen (even if unreadable)."""
         return dict(self._discovered)
 
-    async def _async_setup(self) -> None:
-        """Register for BLE advertisements and pick up already-seen devices."""
-        self._unregister_callbacks.append(
-            async_register_callback(
-                self.hass,
-                self._handle_bluetooth_event,
-                {},  # match everything; filter by name below
-                BluetoothScanningMode.ACTIVE,
-            )
-        )
+    def seed_discovered(self) -> None:
+        """Seed known batteries from the HA Bluetooth discovery cache.
+
+        Called synchronously at setup (so sensor entities can be created for
+        batteries that are already advertising) and again on every poll.
+        """
         for info in async_discovered_service_info(self.hass):
             if _is_ecoworthy(info):
                 self._discovered.setdefault(info.address, info.name or info.address)
 
     async def async_unload(self) -> None:
-        for unregister in self._unregister_callbacks:
-            unregister()
-        self._unregister_callbacks.clear()
         await self.async_shutdown()
-
-    def _handle_bluetooth_event(
-        self, service_info: BluetoothServiceInfoBleak, change: BluetoothChange
-    ) -> None:
-        # BluetoothChange only carries ADVERTISEMENT events in current HA;
-        # there is no REMOVED event to handle.
-        del change  # keep the callback signature
-        if not _is_ecoworthy(service_info):
-            return
-        if service_info.address in self._discovered:
-            return
-        self._discovered[service_info.address] = service_info.name or service_info.address
-        _LOGGER.info(
-            "Discovered ECOWORTHY battery %s (%s); reloading to create entities",
-            service_info.name,
-            service_info.address,
-        )
-        # New device -> recreate sensor entities.
-        self.hass.config_entries.async_schedule_reload(self._config_entry.entry_id)
 
     async def _async_update_data(self) -> dict[str, BatteryData | None]:
         """Connect to every known battery and collect fresh telemetry."""
-        for info in async_discovered_service_info(self.hass):
-            if _is_ecoworthy(info):
-                self._discovered.setdefault(info.address, info.name or info.address)
+        self.seed_discovered()
 
         if not self._discovered:
             _LOGGER.debug("No ECOWORTHY batteries advertised")
@@ -251,7 +219,10 @@ class ECOWORTHYBatteryCoordinator(DataUpdateCoordinator[dict[str, BatteryData | 
 
     async def _read_battery_once(self, device, name: str, address: str) -> BatteryData | None:
         """Perform a single GATT read cycle against one battery."""
-        async with BleakClient(device) as client:
+        client = await establish_connection(
+            BleakClient, device, name, disconnected_callback=None, max_attempts=3
+        )
+        try:
             frames: list[bytes] = []
 
             def _handler(_uuid: str, data: bytearray) -> None:
@@ -282,6 +253,8 @@ class ECOWORTHYBatteryCoordinator(DataUpdateCoordinator[dict[str, BatteryData | 
                 await client.stop_notify(CHAR_NOTIFY)
             except Exception:  # noqa: BLE001
                 pass
+        finally:
+            await client.disconnect()
 
         main: dict[str, Any] | None = None
         cells: dict[str, Any] | None = None
