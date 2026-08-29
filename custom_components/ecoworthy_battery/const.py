@@ -24,6 +24,9 @@ INIT_COMMANDS = (
 FRAME_COLLECT_TIMEOUT = 8.0
 # How long to wait between the init write and the first frame.
 FRAME_WAIT_AFTER_WRITE = 1.0
+# Upper bound for one full battery read (connect + frames), so a stalled
+# BLE connection can never hang the whole poll cycle.
+READ_TIMEOUT = 25.0
 
 MANUFACTURER = "ECOWORTHY"
 MODEL = "314 Ah LiFePO4 (0B/02)"

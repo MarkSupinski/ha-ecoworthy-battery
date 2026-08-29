@@ -92,6 +92,12 @@ SENSOR_DESCRIPTIONS: dict[str, SensorEntityDescription] = {
         state_class=SensorStateClass.MEASUREMENT,
         icon="mdi:alert-circle-outline",
     ),
+    "last_update": SensorEntityDescription(
+        key="last_update",
+        name="Last update",
+        device_class=SensorDeviceClass.TIMESTAMP,
+        icon="mdi:clock-outline",
+    ),
 }
 
 
@@ -154,6 +160,7 @@ def _getter(key: str) -> _VALUE:
         "capacity": lambda d: d.capacity_ah,
         "health": lambda d: d.soh,
         "problem_code": lambda d: d.problem_code,
+        "last_update": lambda d: d.last_updated,
     }[key]
 
 

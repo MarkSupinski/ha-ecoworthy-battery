@@ -213,7 +213,11 @@ class ECOWORTHYBatteryCoordinator(DataUpdateCoordinator[dict[str, BatteryData | 
         return data
 
     async def _read_battery(self, address: str) -> BatteryData | None:
-        """Connect to one battery and read its telemetry frames."""
+        """Connect to one battery and read its telemetry frames.
+
+        Wrapped in a timeout so a stalled BLE connection can never hang the
+        whole poll cycle.
+        """
         device = async_ble_device_from_address(
             self.hass, address, connectable=True
         )
@@ -222,60 +226,68 @@ class ECOWORTHYBatteryCoordinator(DataUpdateCoordinator[dict[str, BatteryData | 
             return None
         name = self._discovered.get(address, device.name or address)
         try:
-            async with BleakClient(device) as client:
-                frames: list[bytes] = []
-
-                def _handler(_uuid: str, data: bytearray) -> None:
-                    frames.append(bytes(data))
-
-                await client.start_notify(CHAR_NOTIFY, _handler)
-
-                # Send the init commands that trigger the telemetry stream.
-                for cmd in INIT_COMMANDS:
-                    try:
-                        await client.write_gatt_char(CHAR_WRITE, cmd, response=True)
-                    except Exception:  # noqa: BLE001 - some modules only accept 0x52
-                        try:
-                            await client.write_gatt_char(CHAR_WRITE, cmd, response=False)
-                        except Exception as exc:  # noqa: BLE001
-                            _LOGGER.debug("init write %s failed: %s", cmd.hex(), exc)
-                    await asyncio.sleep(FRAME_WAIT_AFTER_WRITE)
-                    if _has_frame_pair(frames):
-                        break
-
-                # Collect until we have both frame types or we time out.
-                loop = asyncio.get_running_loop()
-                deadline = loop.time() + FRAME_COLLECT_TIMEOUT
-                while not _has_frame_pair(frames) and loop.time() < deadline:
-                    await asyncio.sleep(0.5)
-
-                try:
-                    await client.stop_notify(CHAR_NOTIFY)
-                except Exception:  # noqa: BLE001
-                    pass
-
-            main: dict[str, Any] | None = None
-            cells: dict[str, Any] | None = None
-            for frame in frames:
-                decoded = decoder.decode_frame(frame)
-                if decoded is None:
-                    continue
-                if frame[decoder.PREFIX_LEN] == decoder.COMMAND_MAIN:
-                    main = decoded
-                else:
-                    cells = decoded
-
-            if main is None and cells is None:
-                _LOGGER.warning("No telemetry received from %s", name)
-                return None
-
-            reading = BatteryData.from_frames(address, name, main or {}, cells)
-            _LOGGER.debug(
-                "Read %s: %.2f V, %.1f%% SOC, %d cells",
-                name, reading.voltage or 0, reading.soc or 0, len(reading.cells),
+            return await asyncio.wait_for(
+                self._read_battery_once(device, name, address), timeout=READ_TIMEOUT
             )
-            return reading
-
+        except asyncio.TimeoutError:
+            _LOGGER.warning("Timed out reading battery %s", name)
+            return None
         except Exception as err:  # noqa: BLE001
             _LOGGER.warning("Failed to read battery %s: %s", name, err)
             return None
+
+    async def _read_battery_once(self, device, name: str, address: str) -> BatteryData | None:
+        """Perform a single GATT read cycle against one battery."""
+        async with BleakClient(device) as client:
+            frames: list[bytes] = []
+
+            def _handler(_uuid: str, data: bytearray) -> None:
+                frames.append(bytes(data))
+
+            await client.start_notify(CHAR_NOTIFY, _handler)
+
+            # Send the init commands that trigger the telemetry stream.
+            for cmd in INIT_COMMANDS:
+                try:
+                    await client.write_gatt_char(CHAR_WRITE, cmd, response=True)
+                except Exception:  # noqa: BLE001 - some modules only accept 0x52
+                    try:
+                        await client.write_gatt_char(CHAR_WRITE, cmd, response=False)
+                    except Exception as exc:  # noqa: BLE001
+                        _LOGGER.debug("init write %s failed: %s", cmd.hex(), exc)
+                await asyncio.sleep(FRAME_WAIT_AFTER_WRITE)
+                if _has_frame_pair(frames):
+                    break
+
+            # Collect until we have both frame types or we time out.
+            loop = asyncio.get_running_loop()
+            deadline = loop.time() + FRAME_COLLECT_TIMEOUT
+            while not _has_frame_pair(frames) and loop.time() < deadline:
+                await asyncio.sleep(0.5)
+
+            try:
+                await client.stop_notify(CHAR_NOTIFY)
+            except Exception:  # noqa: BLE001
+                pass
+
+        main: dict[str, Any] | None = None
+        cells: dict[str, Any] | None = None
+        for frame in frames:
+            decoded = decoder.decode_frame(frame)
+            if decoded is None:
+                continue
+            if frame[decoder.PREFIX_LEN] == decoder.COMMAND_MAIN:
+                main = decoded
+            else:
+                cells = decoded
+
+        if main is None and cells is None:
+            _LOGGER.warning("No telemetry received from %s", name)
+            return None
+
+        reading = BatteryData.from_frames(address, name, main or {}, cells)
+        _LOGGER.debug(
+            "Read %s: %.2f V, %.1f%% SOC, %d cells",
+            name, reading.voltage or 0, reading.soc or 0, len(reading.cells),
+        )
+        return reading
