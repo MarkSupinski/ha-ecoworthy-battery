@@ -34,6 +34,7 @@ from .const import (
     FRAME_WAIT_AFTER_WRITE,
     INIT_COMMANDS,
     NAME_PREFIXES,
+    READ_TIMEOUT,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -152,8 +153,9 @@ class ECOWORTHYBatteryCoordinator(DataUpdateCoordinator[dict[str, BatteryData | 
     def _handle_bluetooth_event(
         self, service_info: BluetoothServiceInfoBleak, change: BluetoothChange
     ) -> None:
-        if change == BluetoothChange.REMOVED:
-            return
+        # BluetoothChange only carries ADVERTISEMENT events in current HA;
+        # there is no REMOVED event to handle.
+        del change  # keep the callback signature
         if not _is_ecoworthy(service_info):
             return
         if service_info.address in self._discovered:
