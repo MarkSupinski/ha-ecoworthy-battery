@@ -109,6 +109,8 @@ class ECOWORTHYBatteryCoordinator(DataUpdateCoordinator[dict[str, BatteryData | 
     def __init__(self, hass: HomeAssistant, config_entry: ConfigEntry) -> None:
         self._config_entry = config_entry
         self._discovered: dict[str, str] = {}  # address -> device name
+        self._reported_addresses: set[str] = set()  # addresses with a good read
+        self._first_update = True
         self._unregister_callbacks: list[Any] = []
         super().__init__(
             hass,
@@ -172,6 +174,42 @@ class ECOWORTHYBatteryCoordinator(DataUpdateCoordinator[dict[str, BatteryData | 
         data: dict[str, BatteryData | None] = {}
         for address in sorted(self._discovered):
             data[address] = await self._read_battery(address)
+
+        _LOGGER.debug(
+            "ECOWORTHY poll: discovered=%s read_ok=%s",
+            sorted(self._discovered),
+            sorted(
+                reading.address
+                for reading in data.values()
+                if reading is not None
+            ),
+        )
+
+        # Sensor entities are only created for batteries with a successful read.
+        # A battery whose radio was asleep on an earlier poll would otherwise
+        # never get a device/entities, so reload the entry the first time any
+        # not-yet-reported battery reads successfully.
+        successful = {
+            address for address, reading in data.items() if reading is not None
+        }
+        if self._first_update:
+            self._first_update = False
+            self._reported_addresses = successful
+        else:
+            new_readings = successful - self._reported_addresses
+            if new_readings:
+                self._reported_addresses |= new_readings
+                for address in sorted(new_readings):
+                    reading = data[address]
+                    _LOGGER.info(
+                        "Battery %s (%s) read successfully; reloading to create entities",
+                        reading.name if reading else address,
+                        address,
+                    )
+                self.hass.config_entries.async_schedule_reload(
+                    self._config_entry.entry_id
+                )
+
         return data
 
     async def _read_battery(self, address: str) -> BatteryData | None:
